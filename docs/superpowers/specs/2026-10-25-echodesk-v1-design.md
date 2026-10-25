@@ -34,15 +34,33 @@ CREATE TABLE tasks (
   updated_at  INTEGER NOT NULL
 );
 CREATE TABLE utterances (
-  id TEXT PRIMARY KEY, text TEXT NOT NULL, created_at INTEGER NOT NULL
+  id TEXT PRIMARY KEY, text TEXT NOT NULL, created_at INTEGER NOT NULL,
+  claude_raw TEXT,                         -- raw model reply, kept to debug/improve the prompt
+  error TEXT                               -- parse/API failure, if any
 );
+-- Links every utterance to the tasks it touched (create/update/done), so a task's full history is queryable.
+CREATE TABLE task_events (
+  id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL REFERENCES tasks(id),
+  utterance_id TEXT REFERENCES utterances(id), -- NULL for UI-originated events
+  action TEXT NOT NULL,                    -- create | update | done
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX task_events_task ON task_events(task_id);
+CREATE INDEX task_events_utt ON task_events(utterance_id);
 ```
+UI actions (Done/Snooze clicks) also write a `task_events` row with `utterance_id` NULL and
+`action = 'ui_done' | 'ui_snooze'`, so `task_events.utterance_id` is nullable.
+Utterances are never deleted by the app; a manual `DELETE FROM utterances` is the v1 privacy lever.
 
 ## Endpoints (all require `Authorization: Bearer APP_TOKEN`)
 - `POST /api/utterance` `{text, now}` → stores the utterance, sends it plus the open tasks to Claude,
   applies the returned actions in one D1 batch, returns the updated open task list.
 - `GET /api/tasks` → open tasks plus tasks done in the last 24h.
-- `PATCH /api/tasks/:id` `{status?, follow_up_at?}` → Done / Snooze buttons.
+- `PATCH /api/tasks/:id` `{status?, follow_up_at?}` → Done / Snooze buttons; writes a `ui_*` task event.
+- `GET /api/tasks/:id/history` → the task's events joined to their utterance text, oldest first.
+- `GET /api/utterances?limit=&before=` → raw transcript log with `claude_raw` and the tasks each touched,
+  for reviewing what Claude got wrong. In the UI: a "History" panel per task plus a transcript log page.
 
 ## Claude contract
 Input: transcript chunk, `now` (ISO, user timezone), list of open tasks `{id, title, follow_up_at}`.
